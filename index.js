@@ -5,97 +5,95 @@ const path = require('path');
 
 // Create directories
 const authDir = path.join(__dirname, 'auth');
-const responsesDir = path.join(__dirname, 'responses');
+const wismaBotDir = path.join(__dirname, '..', 'wisma-bot');
 if (!fs.existsSync(authDir)) fs.mkdirSync(authDir, { recursive: true });
-if (!fs.existsSync(responsesDir)) fs.mkdirSync(responsesDir, { recursive: true });
 
 async function startBot() {
     console.log('📱 Wisma WhatsApp Bot');
     console.log('====================\n');
 
-    // Load auth state
-    const { state, saveState } = await useMultiFileAuthState(authDir);
+    try {
+        // Load auth state
+        const { state, saveState } = await useMultiFileAuthState(authDir);
 
-    // Get latest version
-    const { version } = await fetchLatestBaileysVersion();
-    console.log(`Baileys v${version.join('.')}\n`);
+        // Get latest version
+        const { version } = await fetchLatestBaileysVersion();
+        console.log(`Baileys v${version.join('.')}\n`);
 
-    // Create socket
-    const sock = makeWASocket({
-        auth: state,
-        printQRInTerminal: true,
-        browserDescription: ['Wisma Bot', 'Chrome', '1.0.0'],
-    });
+        // Create socket
+        const sock = makeWASocket({
+            auth: state,
+            browserDescription: ['Wisma Bot', 'Chrome', '1.0.0'],
+        });
 
-    // Save auth on update
-    sock.ev.on('creds.update', saveState);
+        // Save auth on update
+        sock.ev.on('creds.update', saveState);
 
-    // Connection events
-    sock.ev.on('connection.update', ({ connection, lastDisconnect, qr }) => {
-        if (qr) {
-            console.log('\n========================================');
-            console.log('📸  SCAN QR CODE INI DI WHATSAPP:');
-            console.log('========================================\n');
-        }
-
-        if (connection === 'open') {
-            console.log('\n✅ WhatsApp CONNECTED!\n');
-            console.log('Bot siap menerima pesan...\n');
-        }
-
-        if (connection === 'close') {
-            console.log('\n❌ Koneksi terputus');
-            if (lastDisconnect?.error?.output?.statusCode !== 401) {
-                console.log('🔄 Mencoba reconnect dalam 5 detik...\n');
-                setTimeout(startBot, 5000);
+        // Connection events
+        sock.ev.on('connection.update', ({ connection, lastDisconnect }) => {
+            if (connection === 'open') {
+                console.log('\n✅ WhatsApp CONNECTED!\n');
+                console.log('Bot siap menerima pesan...\n');
             }
-        }
-    });
 
-    // Handle incoming messages
-    sock.ev.on('messages.upsert', async ({ messages }) => {
-        for (const msg of messages) {
-            // Skip if own message or group
-            if (msg.key.fromMe) continue;
-            if (msg.key.remoteJid.endsWith('@g.us')) continue;
-
-            // Get message text
-            const messageText = msg.message?.conversation ||
-                               msg.message?.extendedTextMessage?.text || '';
-
-            if (!messageText.trim()) continue;
-
-            const sender = msg.key.remoteJid;
-
-            console.log(`📩 ${sender}: ${messageText}`);
-
-            // Call Python bot
-            try {
-                const response = await callPythonBot(sender, messageText);
-
-                if (response) {
-                    // Send response via WhatsApp
-                    await sock.sendMessage(sender, { text: response });
-                    console.log(`📤 Response sent: ${response.substring(0, 50)}...\n`);
+            if (connection === 'close') {
+                console.log('\n❌ Koneksi terputus');
+                if (lastDisconnect?.error?.output?.statusCode !== 401) {
+                    console.log('🔄 Mencoba reconnect dalam 5 detik...\n');
+                    setTimeout(startBot, 5000);
                 }
-            } catch (err) {
-                console.error('Error:', err);
-                await sock.sendMessage(sender, {
-                    text: 'Maaf, terjadi kesalahan. Ketik *menu* untuk mencoba lagi.'
-                });
             }
-        }
-    });
+        });
+
+        // Handle incoming messages
+        sock.ev.on('messages.upsert', async ({ messages }) => {
+            for (const msg of messages) {
+                // Skip if own message or group
+                if (msg.key.fromMe) continue;
+                if (msg.key.remoteJid.endsWith('@g.us')) continue;
+
+                // Get message text
+                const messageText = msg.message?.conversation ||
+                                   msg.message?.extendedTextMessage?.text || '';
+
+                if (!messageText.trim()) continue;
+
+                const sender = msg.key.remoteJid;
+
+                console.log(`📩 ${sender}: ${messageText}`);
+
+                // Call Python bot
+                try {
+                    const response = await callPythonBot(sender, messageText);
+
+                    if (response) {
+                        await sock.sendMessage(sender, { text: response });
+                        console.log(`📤 Sent: ${response.substring(0, 50)}...\n`);
+                    }
+                } catch (err) {
+                    console.error('Error:', err);
+                    await sock.sendMessage(sender, {
+                        text: 'Maaf, terjadi kesalahan. Ketik *menu* untuk mencoba lagi.'
+                    });
+                }
+            }
+        });
+
+    } catch (err) {
+        console.error('Error initializing:', err);
+        process.exit(1);
+    }
 }
 
 // Call Python bot
 function callPythonBot(sender, message) {
     return new Promise((resolve, reject) => {
-        const pythonScript = `
+        // Prepare Python code
+        const pythonCode = `
 import sys
-sys.path.insert(0, '${path.join(__dirname, '..', 'wisma-bot').replace(/\\/g, '\\\\')}')
 import os
-os.chdir('${path.join(__dirname, '..', 'wisma-bot').replace(/\\/g, '\\\\')}')
+sys.path.insert(0, '${wismaBotDir.replace(/\\/g, '\\\\')}')
+os.chdir('${wismaBotDir.replace(/\\/g, '\\\\')}')
 
 from handlers import WismaHandler
 from db import init_db
@@ -106,23 +104,26 @@ result = handler.handle_message('${sender}', '''${message.replace(/'/g, "\\'")}'
 print(result if result else '')
 `;
 
-        const proc = spawn('python3', ['-c', pythonScript], {
-            cwd: path.join(__dirname, '..', 'wisma-bot')
+        const proc = spawn('python3', ['-c', pythonCode], {
+            cwd: wismaBotDir
         });
 
         let output = '';
         proc.stdout.on('data', (data) => { output += data; });
-        proc.stderr.on('data', (data) => { /* ignore stderr */ });
+        proc.stderr.on('data', (data) => { console.error('[Python]', data); });
 
         proc.on('close', (code) => {
             if (code === 0) {
                 resolve(output.trim());
             } else {
-                reject(new Error(`Python exited with code ${code}`));
+                resolve('Maaf, terjadi kesalahan. Ketik *menu* untuk mencoba lagi.');
             }
         });
 
-        proc.on('error', reject);
+        proc.on('error', (err) => {
+            console.error('Python error:', err);
+            resolve('Maaf, bot sedang offline.');
+        });
     });
 }
 
