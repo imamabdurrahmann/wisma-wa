@@ -1,0 +1,12 @@
+{
+  "name": "wisma-wa",
+  "version": "1.0.0",
+  "description": "WhatsApp bot integration for Wisma Bot using Baileys",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "^6.0.0"
+  }
+}
